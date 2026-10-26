@@ -1,7 +1,8 @@
 [Unit]
 Description=Coda CPU image translation studio
-After=network-online.target
+After=network-online.target coda-nuqta.service
 Wants=network-online.target
+Requires=coda-nuqta.service
 
 [Service]
 Type=simple

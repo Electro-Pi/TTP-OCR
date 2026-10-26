@@ -34,7 +34,9 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
-from pipeline import LETTERS, WARNINGS, detect, get_digit_reader, get_engine, render, shorten, translate
+from pipeline import LETTERS, WARNINGS, detect, get_engine, render, shorten, translate
+
+from nuqta_ocr import OCRInputLimit, OCRDeadlineExceeded
 
 Image.MAX_IMAGE_PIXELS=16_000_000
 DATA=ROOT/'data'
@@ -75,8 +77,10 @@ def warmup():
     try:
         blank=__import__('numpy').full((64,192,3),255,dtype='uint8')
         for lang in ('en','ar'):
-            get_engine(lang).predict(blank)
-        get_digit_reader().predict([blank])
+            engine=get_engine(lang)
+            if lang=='ar':
+                engine.check_ready()
+            list(engine.predict(blank))
         return {'status':'ready','message':'CPU OCR is ready'}
     except Exception:
         log.exception('OCR initialization failed')
@@ -190,7 +194,7 @@ app.mount('/ocr/static',StaticFiles(directory=ROOT/'static'),name='static')
 @app.get('/ocr/api/health')
 def health():
     return {'status':engine_state['status'],'message':engine_state['message'],
-            'ocr':'PP-OCRv6 medium','device':'CPU','translation':'Coda-V2',
+            'ocr':'PP-OCRv6 medium + Nuqta Arabic OCR 0.8B','device':'CPU','translation':'Coda-V2',
             'retention_hours':int(os.getenv('DATA_RETENTION_HOURS','24'))}
 
 
@@ -220,7 +224,10 @@ NOT_FITTED={'ar':'تعذّر وضع كل النصوص بالعربية. راجع
 
 
 def find_text(image, source='en'):
-    regions=detect(image,source)
+    try:
+        regions=detect(image,source)
+    except OCRInputLimit as exc:
+        raise Unprocessable(str(exc)) from exc
     if len(regions)>300:
         raise Unprocessable('This image has too many text regions. Please crop it into smaller images.')
     if not regions:
@@ -330,8 +337,9 @@ def error(description):
 @app.post('/ocr-endpoint',response_class=Response,tags=['Translation'],summary='Translate the text in an image',
           description='Upload an image and receive the same image as a PNG with its text translated in place. '
                       '`direction` chooses `en-ar` (English to Arabic, the default) or `ar-en` (Arabic to English). '
-                      'Synchronous: typically 5–25 seconds, up to 170. '
+                      'Synchronous: processing time depends on text density, up to 170 seconds. '
                       f'Limits: PNG, JPEG or WebP, {MAX_UPLOAD_MB} MB, 32–6000 px per side, 16 megapixels; '
+                      'Arabic OCR defaults to 64 detected crops and a 120-second recognition budget. '
                       '12 images per IP per hour. Full guide: docs/ocr-endpoint.md.',
           responses={200:{'description':'The translated image. Headers `X-Text-Regions`, `X-Review-Count` and '
                                         '`X-Processing-Seconds` summarize the result.',
@@ -341,8 +349,8 @@ def error(description):
                      415:error('Format other than PNG, JPEG or WebP.'),
                      422:error('No source-language text found, too many text regions, or the translation could not fit.'),
                      429:error('Queue full or rate limit reached.'),
-                     502:error('The translation service failed.'),
-                     504:error('Processing took longer than 170 seconds.')})
+                     502:error('The OCR backend or translation service failed.'),
+                     504:error('The OCR time budget or 170-second overall timeout was exceeded.')})
 async def ocr_endpoint(request:Request,image:UploadFile=File(...,description='PNG, JPEG or WebP image containing text to translate.'),
                        direction:Literal['en-ar','ar-en']=Form('en-ar',description='`en-ar`: English text to Arabic. `ar-en`: Arabic text to English.')):
     """Synchronous translation: upload an image, get the translated PNG back."""
@@ -364,6 +372,8 @@ async def ocr_endpoint(request:Request,image:UploadFile=File(...,description='PN
         png,summary=await asyncio.wait_for(asyncio.wrap_future(future),timeout=API_TIMEOUT)
     except asyncio.TimeoutError:
         raise HTTPException(504,'Translation is taking too long. Please try again shortly.')
+    except OCRDeadlineExceeded as e:
+        raise HTTPException(504,str(e))
     except Unprocessable as e:
         raise HTTPException(422,str(e))
     except RuntimeError as e:

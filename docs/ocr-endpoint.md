@@ -75,7 +75,7 @@ curl --fail-with-body -s -F image=@diagram.png -o diagram-arabic.png \
 | Maximum file size | 50 MB |
 | Dimensions | 32 to 6000 pixels on each side |
 | Maximum pixel count | 16 megapixels (for example 4000 × 4000) |
-| Content | At least one line of readable text in the source language (English for `en-ar`, Arabic for `ar-en`), and at most 300 text regions. |
+| Content | At least one line of readable text in the source language (English for `en-ar`, Arabic for `ar-en`), and at most 300 grouped text regions. Arabic recognition additionally allows at most 64 detected crops by default, before recognition. |
 
 The server applies the EXIF orientation of JPEG files before processing, so photos taken on a phone come out upright.
 
@@ -93,7 +93,7 @@ The response body is the translated image as a PNG.
 | `Content-Disposition` | `inline; filename="diagram-arabic.png"` | Suggested file name: your file's name with `-arabic.png` (for `en-ar`) or `-english.png` (for `ar-en`) appended. Characters other than `A–Z a–z 0–9 . _ -` are replaced with `_`. |
 | `X-Translation-Direction` | `en-ar` | The direction that was used. |
 | `X-Text-Regions` | `37` | Number of text regions translated. A region is a label or block of text; lines that belong together are grouped. |
-| `X-Review-Count` | `0` | Number of regions with a visual warning. These usually fit only at a small size, were condensed, or were shortened to fit. If this is above `0`, look at the image before you use it. |
+| `X-Review-Count` | `0` | Number of regions with an OCR or visual warning. These usually fit only at a small size, were condensed, or were shortened to fit. If this is above `0`, look at the image before you use it. |
 | `X-Processing-Seconds` | `21.7` | Time spent on the server, including any wait in the queue. |
 | `Cache-Control` | `no-store` | Don't cache the response. |
 
@@ -133,10 +133,13 @@ Every error from the application is JSON with a `detail` field. `detail` is a st
 | `422` | `This image has too many text regions. …` | The image has more than 300 text regions. Crop it into smaller parts. |
 | `422` | `تعذّر وضع كل النصوص بالعربية. …` | `en-ar`: some of the Arabic didn't fit even after shortening. The server doesn't return a partially translated image. Use the [web app](https://www.coda.eracoda.ai/ocr/) to edit the translations by hand, or crop the image. |
 | `422` | `Some English text could not fit in its space, even after shortening. …` | `ar-en`: the same, for English. Crop the image or give the text more room. |
+| `422` | `This image has more than 64 Arabic text regions. …` | The configurable Arabic crop limit was exceeded before recognition. Split the image. |
+| `504` | `Arabic OCR took too long. …` | The Arabic image budget or per-crop timeout expired. Split the image. |
 | `429` | `The image queue is full. Please try again in a minute.` | Four images are already being processed. Retry shortly. |
 | `429` | `The translation limit has been reached. Please try again later.` | Your IP address or the whole service has used its limit. See [Rate limits](#rate-limits). |
 | `500` | `Processing failed. Please try again with a clearer image.` | Unexpected processing error. |
 | `502` | *(Coda message)*, e.g. `Translation returned an incomplete response. Please try again.` | The Coda translation service failed or returned unusable output. Retry. |
+| `502` | `Nuqta OCR returned an invalid response or is unavailable.` | Check the local Nuqta model service. Truncated readings also fail with 502; try smaller crops. |
 | `502` | *(nginx HTML page)* | The service is down or restarting. Retry after a short wait. |
 | `503` | `OCR models could not be loaded. Check the server configuration.` | The server is misconfigured. Contact the operator. |
 | `504` | `Translation is taking too long. Please try again shortly.` | The request didn't finish within 170 seconds. Retry later. |
@@ -194,20 +197,16 @@ All OCR and drawing runs in one worker process that handles one image at a time.
 
 #### Arabic OCR accuracy
 
-Arabic is read by a separate recognizer, [`arabic_PP-OCRv6_small_rec`](https://huggingface.co/medyas/arabic_PP-OCRv6_small_rec), behind the same PP-OCRv6 text detector. It was chosen after benchmarks on this server's CPU. On Arabic interface text in 18 common UI fonts (Cairo, Tajawal, Almarai, IBM Plex Sans Arabic, Noto and others), it made about 3% character errors end to end, against about 6% for PaddleOCR's official Arabic model.
+Arabic uses PP-OCRv6 Medium detection and [Nuqta Arabic OCR 0.8B](https://huggingface.co/SalahALHaismawi/Nuqta-Arabic-OCR-0.8B-GGUF) recognition. Small images are enlarged 2× for detection, coordinates are mapped back, nested duplicate boxes are removed, and original-resolution crops are read by Nuqta. Output is already in logical Arabic order; there is no character reversal or separate digit rereading pass.
 
-Known weak spots:
+On four synthetic Arabic fixtures, the hybrid read three without character errors. The compressed diagram still had an extra letter after detector cleanup. Those results do not guarantee accuracy on original screenshots, unusual fonts, handwriting, or numbers. Detection, translation and rendering can introduce further errors even when recognition is correct.
 
-- **Arabic-Indic numbers** (٠١٢٣٤٥٦٧٨٩) are the least reliable part. In common UI fonts the digit `١` looks exactly like the letter `ا`, and digits are sometimes dropped or misread, for example `١٢٥٬٠٠٠` read as `١٥`. Lines containing digits are read a second time with PaddleOCR's official Arabic model, which handles them better, but **check numbers in the result**. Western digits (0–9) inside Arabic text are read reliably.
-- **Very small text** (under about 14 px) and **calligraphic fonts** such as Amiri have higher error rates.
-- The recognizer sometimes runs two words together. The translator is told to expect OCR slips and usually translates the intended words.
-
-The OCR output isn't returned. If a translation looks wrong, the source reading is the first thing to suspect.
+Nuqta does not provide calibrated recognition confidence. Arabic regions are marked for review (`confidence: null` internally), so `X-Review-Count` includes uncertain OCR as well as visual-fit issues. The synchronous endpoint returns the rendered image, not raw OCR text.
 
 ### Privacy and data handling
 
 - The uploaded image is processed **in memory and not written to disk**. Nothing is kept after the response is sent.
-- The image itself stays on the server. Only the **extracted text** is sent to the Coda translation API.
+- With the default loopback configuration, image crops stay on the server and only **extracted text** goes to Coda. If `NUQTA_BASE_URL` is configured on another host, Arabic crops go to that host.
 - Responses carry `Cache-Control: no-store`.
 - The response also sets a `coda_ocr_session` cookie. That cookie is used by the web app and can be ignored.
 
@@ -223,7 +222,7 @@ The service rejects browser requests sent from web pages on other domains, so yo
 
 ## How the translation works
 
-1. **Read:** the PP-OCRv6 detector finds every line of text and its outline, and a recognizer for the source language reads it: PP-OCRv6 medium for English, the Arabic recognizer above for Arabic. Lines not in the source language are skipped. Lines that belong to one label (same alignment, size and color, and not separated by a rule) are grouped together.
+1. **Read:** the PP-OCRv6 detector locates text and its outline, and a recognizer for the source language reads it: PP-OCRv6 medium for English, Nuqta for Arabic. Lines not in the source language are skipped. Lines that belong to one label (same alignment, size and color, and not separated by a rule) are grouped together.
 2. **Translate:** all labels are sent to Coda together, so each one is translated with the context of the whole image. Each label comes with the number of characters that fit its space, and short labels get short interface terms. Lists keep one translated line per original line.
 3. **Erase:** the original lettering is removed. Plain backgrounds are refilled with matching texture, and textured backgrounds are inpainted. Diagram lines and borders are preserved.
 4. **Draw:** the translation is drawn in the original text color, at a size that visually matches the original. Arabic is shaped right to left in Noto Sans Arabic and right-aligned; English is set in Noto Sans and left-aligned. Centered labels stay centered.
@@ -371,7 +370,7 @@ if ($status === 200) {
 - **Send the original image.** Re-saving it as a lower-quality JPEG blurs small text and leaves artifacts around the erased letters.
 - **Give the translation room.** Translations are often longer than the original, especially Arabic → English. Tight boxes with long labels are the most common cause of small text (`X-Review-Count` above `0`) or a `422`.
 - **Check numbers in Arabic → English results**, especially numbers written in Arabic-Indic digits. See [Arabic OCR accuracy](#arabic-ocr-accuracy).
-- **Crop busy images.** Very large images with tiny text read better when split, and there is a limit of 300 text regions.
+- **Crop busy images.** Very large images with tiny text read better when split, and Arabic OCR defaults to a limit of 64 detected crops (300 grouped regions for English).
 - **Check `X-Review-Count`.** If it's above `0`, look at the image. For full control, open the [web app](https://www.coda.eracoda.ai/ocr/), which shows each region's translation and lets you edit it.
 - Curved, rotated, perspective or handwritten text may be missed or placed imperfectly.
 
@@ -387,7 +386,7 @@ if ($status === 200) {
 | `422` with `Field required` | The file field isn't named `image`, or the body isn't `multipart/form-data` (for example, it was sent as JSON or raw binary). |
 | `422` "No readable English text" on an image that has text | The text is too small or blurry, or it's Arabic: send `direction=ar-en`. |
 | `422` "No readable Arabic text" on an image that has text | The text is too small or blurry, or it's English: leave out `direction` or send `en-ar`. |
-| A number in an `ar-en` result is wrong | Arabic-Indic digits are the OCR's weakest point. See [Arabic OCR accuracy](#arabic-ocr-accuracy). |
+| A number in an `ar-en` result is wrong | Recognition or translation can still alter numbers. See [Arabic OCR accuracy](#arabic-ocr-accuracy). |
 | `422` with an Arabic message (`en-ar`) | Some translations couldn't fit. Use the web app to shorten them by hand, or give the text more room. |
 | `429` after about 12 images | You've reached the hourly per-IP limit. Wait, or ask the operator to raise `MAX_JOBS_PER_IP_HOUR`. |
 | Your client times out first | Raise its timeout to 180 seconds. Many clients default to 30 or 60 seconds. |
@@ -403,11 +402,11 @@ This section is for whoever runs the server.
 |---|---|
 | Route handler | `ocr_endpoint` in `app.py`; the worker function is `translate_image`. |
 | Shared pipeline | `find_text` and `compose` in `app.py`, used by both the endpoint and web-app jobs; `detect`, `translate`, `render` and `shorten` in `pipeline.py`. Each takes the source or target language; the defaults are English → Arabic. |
-| OCR models | English: `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`. Arabic: the same detector + `models/arabic_PP-OCRv6_small_rec/` (not covered by the `models/` ignore rule because PaddleX cannot download it; pinned revision, re-download steps and checksums in `SOURCE.txt` and `SHA256SUMS`), with `arabic_PP-OCRv5_mobile_rec` re-reading lines that contain digits. The line-orientation classifier is off for Arabic: it turned about one Arabic line in ten upside down. |
+| OCR models | English: `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`. Arabic: `PP-OCRv6_medium_det` + Nuqta 0.8B Q8_0 through the local llama.cpp server. Provisioning and pinned hashes: [Nuqta setup](nuqta-setup.md). |
 | Fonts | `static/fonts/NotoSansArabic.ttf` (Arabic), `static/fonts/NotoSans.ttf` (English), both OFL. |
-| Server timeout | `API_TIMEOUT` in `app.py` (170 s) |
+| Server timeout | `API_TIMEOUT` in `app.py` (170 s); Arabic OCR budget `NUQTA_IMAGE_TIMEOUT` (120 s) and per-crop timeout `NUQTA_REQUEST_TIMEOUT` (30 s) |
 | nginx route | `location = /ocr-endpoint` in `deploy/coda-ocr.conf` (`proxy_read_timeout 180s`), installed at `/etc/nginx/snippets/coda-ocr.conf` |
-| Service | `coda-ocr.service`, listening on `127.0.0.1:8115` |
+| Services | `coda-ocr.service` on `127.0.0.1:8115`, dependent on `coda-nuqta.service` on `127.0.0.1:8116` |
 | Limits | `MAX_JOBS_PER_IP_HOUR`, `MAX_JOBS_PER_DAY` in `.env`, shared with the web app |
 
 The nginx snippet is included in the `www.coda.eracoda.ai` and `coda.eracoda.ai` server blocks. Other domains (`.com`, `.sa`) don't route this path.

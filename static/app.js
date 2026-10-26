@@ -131,7 +131,7 @@ function buildReview(job){
     const input=document.createElement('textarea');input.value=region.translation;input.dataset.region=region.id;input.lang='ar';input.dir='rtl';input.rows=Math.max(1,region.translation.split('\n').length);input.maxLength=2000;input.setAttribute('aria-label','الترجمة العربية للنص: '+region.text);
     const status=document.createElement('div');status.className='review-status'+(region.warnings.length?' warning':'');
     status.textContent=region.warnings.length?region.warnings.map(localizeWarning).join(' · '):'✓ جاهز';
-    const confidence=document.createElement('small');confidence.textContent=`دقة قراءة النص ${Math.round(region.confidence*100)}%`;status.append(confidence);
+    const confidence=document.createElement('small');confidence.textContent=region.confidence==null?'درجة الثقة غير متاحة — راجع قراءة النص':`دقة قراءة النص ${Math.round(region.confidence*100)}%`;status.append(confidence);
     row.append(source,input,status);container.append(row);
   }
   show('review-panel');
@@ -165,6 +165,7 @@ async function restore(){
 }
 function localizeWarning(text){
   return ({'Check the English reading':'راجع قراءة النص الأصلي',
+    'Check the Arabic reading':'راجع قراءة النص العربي',
     'Textured background: check the restored area':'خلفية معقدة: راجع المنطقة المعدّلة',
     'Arabic does not fit: shorten the translation and apply again':'الترجمة أطول من المساحة: اختصرها ثم طبّق التعديلات',
     'Small Arabic text: consider a shorter translation':'الخط العربي صغير: جرّب ترجمة أقصر',

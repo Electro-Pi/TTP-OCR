@@ -1,0 +1,26 @@
+[Unit]
+Description=Coda local Nuqta Arabic OCR model
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bassem
+Group=bassem
+WorkingDirectory=/home/bassem/screenshot-ocr
+EnvironmentFile=/home/bassem/screenshot-ocr/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/bassem/screenshot-ocr/.venv/bin/python scripts/nuqta.py serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+MemoryMax=4G
+CPUQuota=400%
+
+[Install]
+WantedBy=multi-user.target

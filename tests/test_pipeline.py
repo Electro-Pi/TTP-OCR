@@ -327,14 +327,6 @@ def arabic_fixture():
               'polygons':[[[x,y],[x2,y],[x2,y2],[x,y2]]],'line_height':y2-y,'angle':0,'warnings':[]}]
     return im,regions
 
-def test_arabic_reading_order_keeps_numbers_and_latin_runs():
-    from pipeline import logical_order
-    # The Arabic recognizer returns lines in visual order, left to right.
-    assert logical_order('هيلع ةعرقلا') == 'القرعة عليه'
-    assert logical_order('120 تافلملا') == 'الملفات 120'
-    assert logical_order('٣٠ اضر') == 'رضا ٣٠'
-    assert logical_order('KPI ةيسيئرلا تارشؤملا') == 'المؤشرات الرئيسية KPI'
-
 def test_arabic_detection_reads_arabic_only(monkeypatch):
     import pipeline
     im,regions=arabic_fixture()
@@ -342,17 +334,14 @@ def test_arabic_detection_reads_arabic_only(monkeypatch):
     used=[]
     class FakeEngine:
         def predict(self,image):
-            return [{'rec_texts':['ةنمآلا لوصولا ةقبط','Logo'],'rec_scores':[np.float32(.8),np.float32(.99)],
+            return [{'rec_texts':['طبقة الوصول الآمنة','Logo'],'rec_scores':[None,None],
                      'rec_polys':[poly,poly+[0,100]]}]
-    class FakeDigits:
-        def predict(self,crops,batch_size=1):
-            return [{'rec_text':'Logo'} for _ in crops]
     monkeypatch.setattr(pipeline,'get_engine',lambda lang='en':used.append(lang) or FakeEngine())
-    monkeypatch.setattr(pipeline,'get_digit_reader',lambda:FakeDigits())
     result=pipeline.detect(im,'ar')
     assert used==['ar']
     assert [r['text'] for r in result]==['طبقة الوصول الآمنة']
     assert result[0]['warnings']==['Check the Arabic reading']
+    assert result[0]['confidence'] is None
 
 def test_english_translation_rejects_arabic_and_uses_western_digits(monkeypatch):
     import json
@@ -385,14 +374,15 @@ def test_rendered_english_is_ltr_and_left_aligned():
     # No Arabic lettering is left inside the box.
     assert not ((crop[:,int((x2-x1)*.7):,0]<100)&(crop[:,int((x2-x1)*.7):,2]<140)).any()
 
-def test_arabic_indic_numbers_come_from_the_digit_reader(monkeypatch):
+def test_nuqta_logical_order_preserves_numbers_and_latin_runs(monkeypatch):
     import pipeline
-    bgr=np.zeros((100,300,3),np.uint8)
-    polys=[np.asarray([[10,10],[200,10],[200,40],[10,40]])]*3
-    class FakeDigits:
-        def predict(self,crops,batch_size=1):
-            return [{'rec_text':t} for t in ['٣٤٨ طلبا','طلب رقم']][:len(crops)]
-    monkeypatch.setattr(pipeline,'get_digit_reader',lambda:FakeDigits())
-    # Lines with only Arabic words are not re-read; a reading without Arabic-Indic digits is not used.
-    texts=pipeline._arabic_lines(bgr,['Nع٣ طلبا','طلب رقم I٠f٢','أحدث الطلبات'],polys)
-    assert texts==['٣٤٨ طلبا','طلب رقم I٠f٢','أحدث الطلبات']
+    im,_=arabic_fixture()
+    texts=['إجمالي المبيعات ١٢٥٬٠٠٠','رقم الفاتورة ٢٠٢٦-١٠٤٢','المؤشرات الرئيسية KPI']
+    polys=[np.array([[10,10+i*65],[300,10+i*65],[300,35+i*65],[10,35+i*65]]) for i in range(3)]
+    class FakeEngine:
+        def predict(self,image):
+            return [{'rec_texts':texts,'rec_scores':[None]*3,'rec_polys':polys}]
+    monkeypatch.setattr(pipeline,'get_engine',lambda lang='en':FakeEngine())
+    regions=pipeline.detect(im,'ar')
+    assert [r['text'] for r in regions]==texts
+    assert all(r['confidence'] is None and r['warnings'] for r in regions)

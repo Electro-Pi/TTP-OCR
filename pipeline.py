@@ -19,8 +19,6 @@ from PIL import Image, ImageDraw, ImageFont, features
 ROOT = Path(__file__).resolve().parent
 FONT = ROOT / 'static/fonts/NotoSansArabic.ttf'
 LATIN_FONT = ROOT / 'static/fonts/NotoSans.ttf'
-# Arabic recognizer fine-tuned from PP-OCRv6 small; see models/arabic_PP-OCRv6_small_rec/SOURCE.txt.
-ARABIC_REC = ROOT / 'models/arabic_PP-OCRv6_small_rec'
 LATIN_FONTS = {False: Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
                True: Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')}
 # Arabic size that visually matches English set at a given DejaVu-equivalent size.
@@ -33,20 +31,21 @@ def get_engine(lang: str = 'en'):
     """OCR engine reading `lang` text: 'en' (Latin script) or 'ar'."""
     with _engine_lock:
         if lang not in _engines:
-            from paddleocr import PaddleOCR
-            arabic = lang == 'ar'
-            _engines[lang] = PaddleOCR(
-                text_detection_model_name=os.getenv('OCR_DETECTION_MODEL', 'PP-OCRv6_medium_det'),
-                text_recognition_model_name='PP-OCRv6_small_rec' if arabic else os.getenv('OCR_RECOGNITION_MODEL', 'PP-OCRv6_medium_rec'),
-                text_recognition_model_dir=str(ARABIC_REC) if arabic else None,
-                device='cpu', enable_mkldnn=True, cpu_threads=int(os.getenv('OCR_CPU_THREADS', '4')),
-                use_doc_orientation_classify=False, use_doc_unwarping=False,
-                # The line orientation classifier turns about one Arabic line in ten upside down.
-                use_textline_orientation=not arabic,
-                text_det_limit_side_len=1600, text_det_limit_type='max',
-                text_det_thresh=0.25, text_det_box_thresh=0.5,
-                text_rec_score_thresh=0.3,
-            )
+            if lang == 'ar':
+                from nuqta_ocr import PaddleNuqtaOCR
+                _engines[lang] = PaddleNuqtaOCR()
+            else:
+                from paddleocr import PaddleOCR
+                _engines[lang] = PaddleOCR(
+                    text_detection_model_name=os.getenv('OCR_DETECTION_MODEL', 'PP-OCRv6_medium_det'),
+                    text_recognition_model_name=os.getenv('OCR_RECOGNITION_MODEL', 'PP-OCRv6_medium_rec'),
+                    device='cpu', enable_mkldnn=True, cpu_threads=int(os.getenv('OCR_CPU_THREADS', '4')),
+                    use_doc_orientation_classify=False, use_doc_unwarping=False,
+                    use_textline_orientation=True,
+                    text_det_limit_side_len=1600, text_det_limit_type='max',
+                    text_det_thresh=0.25, text_det_box_thresh=0.5,
+                    text_rec_score_thresh=0.3,
+                )
     return _engines[lang]
 
 
@@ -55,23 +54,7 @@ LATIN_LETTER = re.compile('[A-Za-z]')
 ARABIC_LETTER = re.compile('[\u0621-\u064a\u066e-\u06d3\u06fa-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefc]')
 LETTERS = {'en': LATIN_LETTER, 'ar': ARABIC_LETTER}
 READING = {'en': 'Check the English reading', 'ar': 'Check the Arabic reading'}
-# Characters kept in their written order when Arabic OCR output is reversed into reading order.
-NEUTRAL_RUN = re.compile('[a-zA-Z0-9\u0660-\u0669\u06f0-\u06f9 :*./%+-]')
 WESTERN = str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹،؛؟٪', '01234567890123456789,;?%')
-
-
-def logical_order(text: str) -> str:
-    """The Arabic recognizer reads lines in visual order, left to right; restore reading order,
-    keeping runs of Latin letters and digits as written."""
-    parts = []
-    for run in re.findall(f'{NEUTRAL_RUN.pattern}+|.', text):
-        if NEUTRAL_RUN.match(run):
-            # Spaces at the edges of a run separate it from the Arabic around it, so they move with it.
-            core = run.strip(' ')
-            parts += [' '] * (len(run) - len(run.lstrip(' '))) + ([core] if core else []) + [' '] * (len(run) - len(run.rstrip(' ')) if core else 0)
-        else:
-            parts.append(run)
-    return ' '.join(''.join(reversed(parts)).split())
 
 
 CONTINUES = re.compile(r'([,&/(\-:]|\b(?:a|an|and|as|at|by|for|from|in|into|of|on|or|the|to|via|with))\s*$', re.I)
@@ -99,45 +82,6 @@ def _same_colour(a: dict, b: dict) -> bool:
     return difference < max(35, 0.25*contrast)
 
 
-_digit_reader = None
-
-
-def get_digit_reader():
-    """Official PaddleOCR Arabic line recognizer, used for lines with Arabic-Indic digits."""
-    global _digit_reader
-    with _engine_lock:
-        if _digit_reader is None:
-            from paddlex import create_model
-            _digit_reader = create_model(model_name='arabic_PP-OCRv5_mobile_rec', device='cpu', enable_mkldnn=True,
-                                         cpu_threads=int(os.getenv('OCR_CPU_THREADS', '4')))
-    return _digit_reader
-
-
-ARABIC_DIGIT = re.compile('[٠-٩۰-۹]')
-# Anything besides Arabic letters, marks, punctuation and spaces: digits, Latin letters, symbols.
-NOT_ARABIC_WORDS = re.compile('[^\\s؀-ٟ٪-ۿ]')
-
-
-def _arabic_lines(bgr: np.ndarray, texts: list[str], polys) -> list[str]:
-    """The fine-tuned Arabic recognizer reads words well but misreads Arabic-Indic digits (١ as I, ٤ as f).
-    The official PaddleOCR Arabic recognizer reads them reliably, so lines that hold anything besides
-    Arabic words are read again by it, and its reading is used where it finds Arabic-Indic digits."""
-    suspect = [i for i, t in enumerate(texts) if NOT_ARABIC_WORDS.search(t)]
-    if not suspect:
-        return texts
-    crops = []
-    for i in suspect:
-        poly = np.asarray(polys[i])
-        x1, y1 = np.maximum(np.floor(poly.min(axis=0)).astype(int) - 2, 0)
-        x2, y2 = np.ceil(poly.max(axis=0)).astype(int) + 2
-        crops.append(bgr[y1:y2, x1:x2])
-    texts = list(texts)
-    for i, reading in zip(suspect, get_digit_reader().predict(crops, batch_size=8)):
-        if ARABIC_DIGIT.search(reading['rec_text']):
-            texts[i] = reading['rec_text']
-    return texts
-
-
 def detect(image: Image.Image, source: str = 'en') -> list[dict]:
     """Text regions in `source` language ('en' or 'ar'), in original pixel coordinates."""
     rgb = np.asarray(image.convert('RGB'))
@@ -145,8 +89,7 @@ def detect(image: Image.Image, source: str = 'en') -> list[dict]:
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     result = next(iter(engine.predict(bgr)))
     texts = list(result['rec_texts'])
-    if source == 'ar':
-        texts = _arabic_lines(bgr, [logical_order(t) for t in texts], result['rec_polys'])
+    # Nuqta already emits logical Arabic order, including numbers and Latin runs.
     lines = []
     for text, score, poly in zip(texts, result['rec_scores'], result['rec_polys']):
         text = text.strip()
@@ -175,7 +118,7 @@ def detect(image: Image.Image, source: str = 'en') -> list[dict]:
         stroke_width=float(np.median(distances[distances>0])) if np.any(distances) else 1
         # Any stroke is at least a pixel wide, so small regular text needs a thicker stroke to count as bold.
         bold=bool(stroke_width/max(1,y2-y1)>.065 and stroke_width>1)
-        lines.append({'text': text, 'confidence': round(float(score), 3),
+        lines.append({'text': text, 'confidence': None if score is None else round(float(score), 3),
                       'box': [int(x1), int(y1), int(x2), int(y2)],
                       'polygons': [poly.round(2).tolist()], 'angle': angle, 'color':foreground.tolist(), 'background':background.tolist(), 'bold':bold})
     lines.sort(key=lambda r: (r['box'][1], r['box'][0]))
@@ -220,7 +163,8 @@ def detect(image: Image.Image, source: str = 'en') -> list[dict]:
             candidate['box'] = [min(candidate['box'][0], x1), candidate['box'][1], max(candidate['box'][2], x2), y2]
             candidate['polygons'] += line['polygons']
             candidate['line_height'] = max(candidate['line_height'],h)
-            candidate['confidence'] = min(candidate['confidence'], line['confidence'])
+            candidate['confidence'] = (None if candidate['confidence'] is None or line['confidence'] is None
+                                       else min(candidate['confidence'], line['confidence']))
         else:
             groups.append({**line, 'line_height': h, 'lines': [line['text']], 'last': line['box']})
     for i, group in enumerate(groups):
@@ -235,7 +179,7 @@ def detect(image: Image.Image, source: str = 'en') -> list[dict]:
             if centres < min(lefts, rights) and min(lefts, rights) > group['line_height'] * 0.5:
                 group['align'] = 'center'
         group['translation'] = ''
-        group['warnings'] = [READING[source]] if group['confidence'] < 0.85 else []
+        group['warnings'] = [READING[source]] if group['confidence'] is None or group['confidence'] < 0.85 else []
     return groups
 
 

@@ -1,0 +1,28 @@
+{
+  "repo": "SalahALHaismawi/Nuqta-Arabic-OCR-0.8B-GGUF",
+  "revision": "44273ba7b986ceaf7413e23562573d54d40503dc",
+  "files": {
+    "nuqta-ocr-0.8b-Q8_0.gguf": {
+      "sha256": "9e668a31aaaa0262134737262298d53f8240f390004f5ff72270334acc90532c",
+      "bytes": 872607744
+    },
+    "nuqta-ocr-0.8b-mmproj-f16.gguf": {
+      "sha256": "ca24aaf3a572147676411ba661f754eeadb66aa1daf8d133dc001e556370ed41",
+      "bytes": 204986688
+    },
+    "README.md": {
+      "sha256": "a9120ddaf7f3ec2c8b93f59df0b9333633cac04b62a580415242fe3d6e116936",
+      "bytes": 6643
+    },
+    "LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    }
+  },
+  "runtime": {
+    "version": "b11907",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11907/llama-b11907-bin-ubuntu-x64.tar.gz",
+    "sha256": "dfa612cbb6031a8f64e53234c1c593e84123060959168ec8892baaee6aaa02e0",
+    "binary": "llama-b11907/llama-server"
+  }
+}
