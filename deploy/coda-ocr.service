@@ -1,0 +1,27 @@
+[Unit]
+Description=Coda CPU image translation studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bassem
+Group=bassem
+WorkingDirectory=/home/bassem/screenshot-ocr
+EnvironmentFile=/home/bassem/screenshot-ocr/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/bassem/screenshot-ocr/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8115 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/bassem/screenshot-ocr/data /home/bassem/screenshot-ocr/models
+MemoryMax=8G
+CPUQuota=400%
+
+[Install]
+WantedBy=multi-user.target

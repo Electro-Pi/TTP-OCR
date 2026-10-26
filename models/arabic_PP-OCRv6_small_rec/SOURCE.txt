@@ -1,0 +1,16 @@
+Arabic text-line recognizer used for Arabic-to-English translation (pipeline.ARABIC_REC).
+
+Source:   https://huggingface.co/medyas/arabic_PP-OCRv6_small_rec
+Revision: 0f1155db29389258f18e9232a770859719d3c6e9 (files from its inference/ folder)
+License:  Apache-2.0
+Model:    PP-OCRv6_small_rec fine-tuned on synthetic printed Arabic; outputs text in visual order,
+          which pipeline.logical_order() reverses.
+
+Unlike the official PaddleOCR models, PaddleX cannot download this one automatically, so it is kept
+here and excluded from the models/ ignore rule. To fetch it again and verify it:
+
+  REV=0f1155db29389258f18e9232a770859719d3c6e9
+  for f in inference.json inference.pdiparams inference.yml; do
+    curl -fL -o $f https://huggingface.co/medyas/arabic_PP-OCRv6_small_rec/resolve/$REV/inference/$f
+  done
+  sha256sum -c SHA256SUMS

@@ -1,0 +1,11 @@
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+python-multipart>=0.0.20
+httpx>=0.28,<1
+python-dotenv>=1,<2
+Pillow>=11,<13
+opencv-python-headless>=4.10,<5
+paddlepaddle==3.2.2
+paddleocr==3.7.0
+paddlex==3.7.2
+pytest>=8,<10

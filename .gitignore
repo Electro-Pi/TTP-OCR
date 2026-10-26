@@ -1,0 +1,11 @@
+.env
+.env.remote.example
+.venv/
+__pycache__/
+.pytest_cache/
+data/
+models/*
+!models/arabic_PP-OCRv6_small_rec/
+*.log
+test-results/
+node_modules/
